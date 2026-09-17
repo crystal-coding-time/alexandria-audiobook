@@ -10,6 +10,8 @@ Transform any book or novel into a fully-voiced audiobook using AI-powered scrip
 
 ## Example: [sample.mp3](https://github.com/user-attachments/files/25276110/sample.mp3)
 
+Verbatim render: [The Ransom of Red Chief](https://github.com/crystal-coding-time/alexandria-audiobook/releases/download/showcase-red-chief/red_chief_alexandria.mp3) — O. Henry (1907), public domain. 32 minutes, five voices, script byte-identical to the source text.
+
 
 ## Screenshots
 
