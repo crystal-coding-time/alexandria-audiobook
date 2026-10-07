@@ -1371,6 +1371,16 @@ def test_distance_one_predicate_is_exact_and_bounded():
     check(not _is_distance_one("BRANNOC", "BRAN"), "a length gap of 3")
     check(_is_distance_one("ИРИНА", "ИРИН"),
           "the predicate is code-point based, not ASCII")
+    # A swap of two adjacent characters is ONE transcription slip, not two, so
+    # the predicate scores it as one edit (OSA, not plain Levenshtein). Without
+    # this, transposed spellings fall outside repair_speaker's distance-1 guard
+    # and a correctly-identified character loses its voice to NARRATOR.
+    check(_is_distance_one("ABCDEF", "ABDCEF"), "one adjacent transposition")
+    check(_is_distance_one("XY", "YX"), "a transposition of the whole string")
+    check(not _is_distance_one("ABCDEF", "ABDCFE"),
+          "two separate transpositions are not distance 1")
+    check(not _is_distance_one("ABCDEF", "ADCBEF"),
+          "a swap across a gap is not an adjacent transposition")
 
 
 # ---------------------------------------------------------------------------
