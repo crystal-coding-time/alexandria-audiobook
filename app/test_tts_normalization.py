@@ -28,6 +28,15 @@ import os
 import sys
 import tempfile
 
+# Test data includes non-ASCII (CJK, smart quotes), and a Windows console
+# defaults to cp1252, so PRINTING a passing check used to crash the suite.
+# Same idiom as test_span_tokenizer.py / test_span_integration.py.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import tts_normalizer  # noqa: E402

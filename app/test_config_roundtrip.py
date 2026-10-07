@@ -179,11 +179,20 @@ check("llm section keeps its unknown keys too (extra='allow')",
             "llm": {**REALISTIC_CONFIG["llm"], "future_llm_key": "keep-me"}}
            )["llm"].get("future_llm_key") == "keep-me")
 
-# The gate must default OFF and the timeout must stay ABSENT when unset, or
-# enabling either becomes a silent behaviour change for existing installs.
-check("require_attested_speakers defaults to False",
+# The gate defaults ON (cbe4a67): it catches fabricated speaker labels, and
+# shipping it opt-in meant it did nothing unless someone went looking for a
+# config key. app.py's GenerationConfig and generate_script.py's direct
+# config.json read must agree, or behaviour would depend on whether the key
+# had ever been saved -- so this asserts the saved default, not just absence.
+check("require_attested_speakers defaults to True",
       save(copy.deepcopy(REALISTIC_CONFIG))["generation"].get(
-          "require_attested_speakers") is False)
+          "require_attested_speakers") is True)
+# Same two-reader hazard, same commit, so it gets the same guard.
+check("check_attribution_tags defaults to True",
+      save(copy.deepcopy(REALISTIC_CONFIG))["generation"].get(
+          "check_attribution_tags") is True)
+# The timeout must stay ABSENT when unset, or a value gets forced on every
+# existing install at first save.
 check("llm.timeout absent when never set (SDK default preserved)",
       "timeout" not in save(copy.deepcopy(REALISTIC_CONFIG))["llm"])
 check("attestation_lookback_chars absent when never set",
