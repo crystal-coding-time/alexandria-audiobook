@@ -4,7 +4,7 @@
 
 [English](README.md) | 中文
 
-> **致新用户：** 感谢大家的关注！Alexandria 近期突然获得了大量关注，新用户涌入的速度远超预期。作为一个小型项目，我们可能无法及时回复每一个 Issue。在提交问题之前，请先仔细阅读本文档和 [Wiki](https://github.com/Finrandojin/alexandria-audiobook/wiki)，其中涵盖了大部分常见问题的解答。感谢大家的耐心与理解！
+> **关于本分支：** 这是 [Finrandojin/alexandria-audiobook](https://github.com/Finrandojin/alexandria-audiobook) 的一个独立分支，围绕**逐字忠实**重新构建：原文逐字朗读，引号内的对话分配角色声音，而“said Marcus”这类引述标签由旁白朗读而不是被丢弃。生成的脚本与源文本逐字节一致。上游的全部功能依然可用，本分支改变的是脚本的生成方式。关于声音类型、LoRA 训练和批量生成的通用说明，上游 [Wiki](https://github.com/Finrandojin/alexandria-audiobook/wiki) 仍然适用；但与本分支行为相关的问题请在此仓库提交，而不是上游。
 
 利用 AI 驱动的脚本标注和文本转语音技术，将任何书籍或小说转化为全配音有声书。内置 Qwen3-TTS 引擎，支持批量处理，并提供浏览器端编辑器，可逐行精调后导出。
 

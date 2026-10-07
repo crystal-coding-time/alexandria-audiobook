@@ -4,7 +4,7 @@
 
 English | [中文](README_CN.md)
 
-> **A note to new users:** Alexandria has recently seen a sudden surge of attention and new users. As a small project, I may not be able to respond to every issue promptly. Before opening an issue, please read this README and the [Wiki](https://github.com/Finrandojin/alexandria-audiobook/wiki) thoroughly — most common questions are already answered there. Thank you for your patience!
+> **About this fork:** This is an independent fork of [Finrandojin/alexandria-audiobook](https://github.com/Finrandojin/alexandria-audiobook), rebuilt around verbatim fidelity: the author's text is read word-for-word, quoted dialogue gets character voices, and attribution tags like "said Marcus" are read by the narrator rather than dropped. The generated script is byte-identical to the source text. Everything upstream does still works; this changes how the script is built. For general guidance on voices, LoRA training and batch generation, the upstream [Wiki](https://github.com/Finrandojin/alexandria-audiobook/wiki) still applies — but please open issues about fork-specific behaviour here, not there.
 
 Transform any book or novel into a fully-voiced audiobook using AI-powered script annotation and text-to-speech. Features a built-in Qwen3-TTS engine with batch processing and a browser-based editor for fine-tuning every line before final export.
 
