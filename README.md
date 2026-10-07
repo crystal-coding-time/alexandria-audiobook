@@ -102,8 +102,8 @@ The goal is an industry-standard audiobook, not an audio drama: the author's tex
 ### Option A: Pinokio (Recommended)
 
 1. Install [Pinokio](https://pinokio.computer/) if you haven't already
-2. Open Alexandria on Pinokio: **[Install via Pinokio](https://beta.pinokio.co/apps/github-com-finrandojin-alexandria-audiobook)**
-   - Or manually: in Pinokio, click **Download** and paste `https://github.com/Finrandojin/alexandria-audiobook`
+2. In Pinokio, click **Download** and paste `https://github.com/crystal-coding-time/alexandria-audiobook`
+   - The [Pinokio catalog entry](https://beta.pinokio.co/apps/github-com-finrandojin-alexandria-audiobook) installs the original upstream project, not this fork.
 3. Click **Install** to set up dependencies
 4. Click **Start** to launch the web interface
 
@@ -111,7 +111,7 @@ The goal is an industry-standard audiobook, not an audio drama: the author's tex
 
 No GPU or wrong OS? Run Alexandria on a free T4 GPU in your browser:
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Finrandojin/alexandria-audiobook/blob/main/alexandria_colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/crystal-coding-time/alexandria-audiobook/blob/main/alexandria_colab.ipynb)
 
 Requires a free [ngrok account](https://dashboard.ngrok.com/signup) for the web UI tunnel. See the notebook for full instructions.
 
@@ -120,7 +120,7 @@ Requires a free [ngrok account](https://dashboard.ngrok.com/signup) for the web 
 For integration into automated pipelines or server deployments:
 
 ```bash
-git clone https://github.com/Finrandojin/alexandria-audiobook.git
+git clone https://github.com/crystal-coding-time/alexandria-audiobook.git
 cd alexandria-audiobook
 docker compose up --build
 ```

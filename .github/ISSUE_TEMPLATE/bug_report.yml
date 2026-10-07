@@ -8,8 +8,8 @@ body:
       value: |
         Thanks for reporting a bug! Before submitting, please check:
         - [ ] The [Troubleshooting](https://github.com/Finrandojin/alexandria-audiobook/wiki/Troubleshooting) wiki page
-        - [ ] The [First Launch](https://github.com/Finrandojin/alexandria-audiobook#first-launch--what-to-expect) section in the README
-        - [ ] Existing [issues](https://github.com/Finrandojin/alexandria-audiobook/issues) for duplicates
+        - [ ] The [First Launch](https://github.com/crystal-coding-time/alexandria-audiobook#first-launch--what-to-expect) section in the README
+        - [ ] Existing [issues](https://github.com/crystal-coding-time/alexandria-audiobook/issues) for duplicates
 
   - type: textarea
     id: description
