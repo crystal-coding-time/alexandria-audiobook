@@ -306,11 +306,11 @@ Each voice card has an "Alias of" dropdown. Setting a speaker as an alias of ano
 
 Aliases resolve transitively (A → B → C uses C's config) with cycle detection.
 
-Honorific variants ("DR. SMITH" → "SMITH") no longer need an alias — canonicalization strips a leading honorific automatically.
+Rank-title variants ("DR. SMITH" → "SMITH", "CAPTAIN PICARD" → "PICARD") no longer need an alias — canonicalization strips a leading rank title automatically.
 
-> **Known limitation:** because honorifics are stripped, `MR SMITH` and `MRS SMITH` both canonicalize to `SMITH`, so a husband and wife share one voice card and one voice. There is currently no way to split them back apart. If a book distinguishes two characters only by title, edit their `speaker` values in the Editor to something unambiguous before configuring voices.
+Gender-marking titles are **kept**, because they distinguish characters rather than decorate one: `MR SMITH` → `MISTER SMITH` and `MRS SMITH` → `MISSUS SMITH` stay two voice cards, so a husband and wife do not collapse into one voice. The preserved titles are MISTER, MISSUS, MS, MISS, MX, MONSIEUR, MADAME, MADEMOISELLE, SIR, LADY, LORD, DAME and FR; French forms are normalized within their own language ("M." → MONSIEUR, "MME" → MADAME) and never folded onto the English ones. If a book really does use one title for two people, alias one to the other.
 
-`GET /api/voices/alias_suggestions` returns advisory fuzzy-similarity suggestions (JON/JOHN, ELLA/BELLA) for the current roster. It is purely advisory — nothing is merged — and is not yet surfaced in the UI.
+`GET /api/voices/alias_suggestions` returns advisory fuzzy-similarity suggestions (JON/JOHN, ELLA/BELLA) for the current roster. It is purely advisory — nothing is merged. The Voices screen shows these as dismissable hints in its summary strip.
 
 **Custom Voice Mode:**
 - Select from 9 pre-trained voices: Aiden, Dylan, Eric, Ono_anna, Ryan, Serena, Sohee, Uncle_fu, Vivian
