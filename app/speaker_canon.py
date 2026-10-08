@@ -1222,10 +1222,10 @@ def repair_speaker(canonical, windows, roster_index, source_words):
       4. Candidates are core tokens of names already established in this
          book's roster that also occur as whole words in this label's own
          attestation window AND in the book at large (_repair_candidate_pool).
-      5. Exactly ONE candidate lies at Levenshtein distance 1 (_is_distance_one
-         -- an exact bounded predicate, never a similarity ratio), AND no
-         OTHER roster token anywhere in the book's roster lies at distance 1
-         either. Two or more of either kind means the evidence does not pick a
+      5. Exactly ONE candidate lies at distance 1 (_is_distance_one -- an exact
+         bounded predicate, never a similarity ratio; OSA, so one substitution,
+         insertion, deletion, OR adjacent transposition), AND no OTHER roster
+         token anywhere in the book's roster lies at distance 1 either. Two or more of either kind means the evidence does not pick a
          winner, so it refuses.
       6. Tokens that already attest are kept verbatim, in place, with their
          possessive intact; only refuted tokens are substituted.

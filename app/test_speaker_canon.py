@@ -1261,6 +1261,29 @@ def test_repair_folds_a_unique_distance_one_misspelling():
                 "one refuted token, one established candidate one edit away")
 
 
+def test_repair_folds_a_transposed_misspelling():
+    # The integration point for the OSA predicate: a transposition has to
+    # survive the whole guard chain, not just _is_distance_one -- candidate
+    # pooling, the roster-wide ambiguity check, and the final re-attestation.
+    # Covered separately because every other repair test uses an insertion,
+    # deletion or substitution, so none of them exercises this path.
+    check_equal(repair_speaker("BRANNCO", WINDOW_BRANNOC, _roster("BRANNOC"),
+                               BOOK_BRANNOC),
+                "BRANNOC",
+                "a transposed spelling repairs onto the established name")
+
+
+def test_repair_refuses_a_transposition_when_the_book_spells_it_that_way():
+    # Guard 3 outranks the widened metric: if the book itself uses the
+    # transposed spelling, it is somebody's name, not a typo.
+    windows = ['Brannco set down the lamp. "It is done," he said.']
+    book = _book('Brannco set down the lamp. "It is done," he said.',
+                 "Brannoc kept the ledger.")
+    check_equal(repair_speaker("BRANNCO", windows, _roster("BRANNOC"), book),
+                None,
+                "a spelling the book uses is never repaired away")
+
+
 def test_repair_keeps_attested_tokens_verbatim():
     windows = ["Brannoc of Esk set down the lamp."]
     book = _book("Brannoc of Esk set down the lamp.")
@@ -1586,6 +1609,8 @@ def main():
         test_repair_refuses_a_transliteration_variant_the_book_uses,
         test_repair_refuses_a_plural_singular_pair_the_book_uses,
         test_repair_folds_a_unique_distance_one_misspelling,
+        test_repair_folds_a_transposed_misspelling,
+        test_repair_refuses_a_transposition_when_the_book_spells_it_that_way,
         test_repair_keeps_attested_tokens_verbatim,
         test_repair_refuses_when_two_candidates_are_one_edit_away,
         test_repair_refuses_when_the_ambiguity_is_only_visible_in_the_roster,
