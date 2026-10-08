@@ -191,6 +191,16 @@ check("require_attested_speakers defaults to True",
 check("check_attribution_tags defaults to True",
       save(copy.deepcopy(REALISTIC_CONFIG))["generation"].get(
           "check_attribution_tags") is True)
+# Third key with the same two-reader hazard: app.py's GenerationConfig backs
+# the UI, generate_script.py reads config.json directly in the subprocess.
+check("constrain_label_schema defaults to True",
+      save(copy.deepcopy(REALISTIC_CONFIG))["generation"].get(
+          "constrain_label_schema") is True)
+check("constrain_label_schema persists when switched off",
+      save({**copy.deepcopy(REALISTIC_CONFIG),
+            "generation": {**REALISTIC_CONFIG["generation"],
+                           "constrain_label_schema": False}}
+           )["generation"].get("constrain_label_schema") is False)
 # The timeout must stay ABSENT when unset, or a value gets forced on every
 # existing install at first save.
 check("llm.timeout absent when never set (SDK default preserved)",

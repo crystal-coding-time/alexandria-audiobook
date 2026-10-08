@@ -297,6 +297,11 @@ class GenerationConfig(BaseModel):
     # rather than misfiring, since the tags carry none of the English speech
     # verbs it recognizes.
     check_attribution_tags: bool = True
+    # Send a JSON Schema with each label request. Ollama compiles it to a
+    # grammar and masks invalid tokens while decoding, so a "text" key,
+    # more labels than spans, an out-of-range span id and an invented role
+    # all become unrepresentable rather than discarded afterwards.
+    constrain_label_schema: bool = True
     # Preceding source characters joined to the current chunk when attesting a
     # speaker name. None/unset = fall back to chunk_size, so the default tracks
     # the chunk size rather than pinning a second number that can disagree

@@ -56,7 +56,9 @@ from generate_script import (  # noqa: E402
     NARRATOR,
     PROMPT_SCHEMA_MARKER,
     build_entries,
+    build_label_schema,
     build_span_payload,
+    label_token_budget,
     extract_labels,
     is_whitespace_span,
     llm_log_dir,
@@ -66,6 +68,7 @@ from generate_script import (  # noqa: E402
     resolve_span_labels,
     salvage_label_entries,
     salvage_markdown_labels,
+    visible_spans,
     select_prompt,
     build_context,
     MAX_CONTEXT_ROSTER_NAMES,
@@ -2489,3 +2492,75 @@ class TestAttributionTagCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestLabelSchemaConstraint(unittest.TestCase):
+    """The grammar constraint sent with each label request.
+
+    Properties only -- every assertion is derived from the spans the tokenizer
+    produced for synthetic text, never from any particular book. The point of
+    the schema is that the failures it prevents become unrepresentable, so what
+    is asserted is the shape of the constraint, not a corpus outcome.
+    """
+
+    CHUNK = 'He set it down. "Stop," she said. "Why would I?" he asked. It ended.'
+
+    def _schema_sent(self, **kwargs):
+        spans = tokenize(self.CHUNK)
+        labels = [{"id": s.id, "speaker": "NARRATOR", "role": "narration",
+                   "instruct": "Neutral."} for s in spans]
+        client = FakeClient(make_response(json.dumps(labels)))
+        run_chunk(client, self.CHUNK, **kwargs)
+        return client.completions.last_kwargs.get("response_format")
+
+    def test_schema_is_sent_by_default(self):
+        fmt = self._schema_sent()
+        self.assertIsNotNone(fmt, "no response_format was sent")
+        self.assertEqual(fmt["type"], "json_schema")
+
+    def test_schema_can_be_switched_off(self):
+        self.assertIsNone(self._schema_sent(constrain_schema=False))
+
+    def test_item_count_is_pinned_to_the_visible_span_count(self):
+        schema = self._schema_sent()["json_schema"]["schema"]
+        visible = visible_spans(tokenize(self.CHUNK), self.CHUNK)
+        # More labels than spans is the observed failure (one live chunk drew
+        # ~119 labels for a single span); fewer is the early-close failure.
+        self.assertEqual(schema["minItems"], len(visible))
+        self.assertEqual(schema["maxItems"], len(visible))
+
+    def test_ids_are_bounded_by_the_ids_actually_sent(self):
+        schema = self._schema_sent()["json_schema"]["schema"]
+        ids = [s.id for s in visible_spans(tokenize(self.CHUNK), self.CHUNK)]
+        self.assertEqual(schema["items"]["properties"]["id"]["minimum"], min(ids))
+        self.assertEqual(schema["items"]["properties"]["id"]["maximum"], max(ids))
+
+    def test_a_text_key_is_unrepresentable(self):
+        """Contract 1 as a decoder guarantee, not a prompt request."""
+        items = self._schema_sent()["json_schema"]["schema"]["items"]
+        self.assertFalse(items["additionalProperties"])
+        self.assertNotIn("text", items["properties"])
+
+    def test_role_is_a_closed_two_value_set(self):
+        items = self._schema_sent()["json_schema"]["schema"]["items"]
+        self.assertEqual(sorted(items["properties"]["role"]["enum"]),
+                         ["dialogue", "narration"])
+
+    def test_speaker_is_left_free(self):
+        """Deliberate: an enum would force a wrong-but-present name when the
+        true speaker is absent, which attestation could no longer catch."""
+        items = self._schema_sent()["json_schema"]["schema"]["items"]
+        self.assertNotIn("enum", items["properties"]["speaker"])
+
+    def test_no_schema_when_there_is_nothing_to_ask_about(self):
+        self.assertIsNone(build_label_schema([], ""))
+
+    def test_budget_scales_with_span_count_and_respects_the_ceiling(self):
+        small = label_token_budget(1, 4096)
+        large = label_token_budget(60, 4096)
+        self.assertLess(small, large, "budget must grow with span count")
+        self.assertLessEqual(large, 4096, "config max_tokens is a ceiling")
+        self.assertEqual(label_token_budget(10_000, 4096), 4096,
+                         "a huge span count clamps to the ceiling")
+        self.assertEqual(label_token_budget(0, 4096), 4096,
+                         "no spans falls back to the configured value")

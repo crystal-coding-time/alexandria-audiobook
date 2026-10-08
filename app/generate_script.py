@@ -69,6 +69,17 @@ PROMPT_SCHEMA_MARKER = "span-labels-v1"
 # input, not output -- a snippet is enough and keeps the prompt cheap.
 CONTEXT_SNIPPET_CHARS = 120
 
+# Cap on a single `instruct` direction. A delivery note is a short phrase; an
+# uncapped one is the only field that can run away and is what pushed one live
+# completion into max_tokens. Enforced by the schema's maxLength when a schema
+# is sent, so it bounds the GRAMMAR, not just the prose.
+INSTRUCT_MAX_CHARS = 160
+
+# Completion-budget shape for label responses: see label_token_budget().
+LABEL_BUDGET_BASE_TOKENS = 400
+LABEL_BUDGET_TOKENS_PER_SPAN = 50
+LABEL_BUDGET_MIN_TOKENS = 1024
+
 # Cap on how many character names build_context()'s roster block may list.
 # Previously uncapped: a real 976-chunk run reached 577 names, a ~7,400-char
 # block (~2,000 tokens) growing monotonically for the whole book and crowding
@@ -886,6 +897,92 @@ def build_span_payload(spans, source):
         for span in spans
         if not is_whitespace_span(span, source)
     )
+
+
+def build_label_schema(spans, source, instruct_max=INSTRUCT_MAX_CHARS):
+    """A JSON Schema that makes most of the label contract UNREPRESENTABLE.
+
+    Ollama compiles a schema into a GBNF grammar and enforces it by masking
+    invalid tokens while decoding -- a finite state machine over the token
+    vocabulary. What the prompt currently asks for politely, this makes
+    impossible. Verified empirically against the configured server (an `enum`
+    forced a name the model did not want to emit); not inferred from upstream
+    source, because Ollama vendors its own llama.cpp and the two drift.
+
+    What this schema removes, each tied to an observed live failure:
+
+      * ``additionalProperties: False`` -- a ``text`` key cannot be emitted.
+        Contract 1 stops being a request and becomes a decoder guarantee.
+      * ``maxItems`` = the visible span count -- a chunk of pure narration that
+        tokenized to ONE span once drew ~119 labels; more labels than spans is
+        now unrepresentable. ``minItems`` likewise closes the early-close case
+        that caused 23 of 38 missing-span retries.
+      * ``id`` bounded to [min, max] of the ids actually sent -- an id outside
+        the visible range cannot occur.
+      * ``role`` as a two-value enum -- invented roles ("thought") cannot occur.
+      * ``instruct`` with ``maxLength`` -- the one field that can run away, and
+        what pushed a live completion into max_tokens.
+
+    DELIBERATELY NOT CONSTRAINED, and why:
+
+    ``speaker`` is a free string. An enum of names present in the text would
+    eliminate misspellings and ~56% of retries, but when the true speaker is
+    not among them the grammar forces a confidently WRONG name that
+    attestation can no longer catch -- trading a loud failure for a silent one,
+    against contract 7. That is a separate, measured change.
+
+    The exact id SET is not pinned. Doing so needs per-position typing
+    (``prefixItems``), which Ollama ACCEPTS AND SILENTLY IGNORES, so a schema
+    using it would look applied while constraining nothing -- worse than
+    sending none. An id-keyed object would pin the set, but that is a different
+    response shape than the prompt specifies and would require bumping
+    PROMPT_SCHEMA_MARKER; kept for a follow-up if duplicate-id responses show
+    up in practice. Count plus range already makes the observed failure
+    (phantom ids far outside the range, in bulk) unrepresentable.
+
+    Returns None when there is nothing to ask about, so the caller sends no
+    constraint rather than an empty one.
+    """
+    ids = [span.id for span in visible_spans(spans, source)]
+    if not ids:
+        return None
+    instruct = {"type": "string"}
+    if instruct_max:
+        instruct["maxLength"] = int(instruct_max)
+    return {
+        "type": "array",
+        "minItems": len(ids),
+        "maxItems": len(ids),
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "minimum": min(ids), "maximum": max(ids)},
+                "speaker": {"type": "string"},
+                "role": {"type": "string", "enum": ["dialogue", "narration"]},
+                "instruct": instruct,
+            },
+            "required": ["id", "speaker", "role", "instruct"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def label_token_budget(span_count, ceiling):
+    """Completion budget scaled to the number of spans actually asked about.
+
+    A flat ceiling is the wrong shape once a schema is enforced: ``required``
+    removes the model's ability to close the object early, so a budget too
+    small for the span count truncates mid-object instead of returning fewer
+    labels. Measured on one production run, p99 completion was 2403 tokens for
+    ~45-60 spans with an uncapped ``instruct``; per-span worst case is ~50
+    tokens with ``instruct`` capped. The ``ceiling`` (generation.max_tokens)
+    is respected as a CEILING, so no existing config loses headroom, and the
+    floor keeps small chunks from being starved.
+    """
+    if not span_count:
+        return ceiling
+    scaled = LABEL_BUDGET_BASE_TOKENS + LABEL_BUDGET_TOKENS_PER_SPAN * span_count
+    return max(LABEL_BUDGET_MIN_TOKENS, min(int(ceiling), scaled))
 
 
 # Recovery modes ranked by fidelity, worst-last. When labels for one chunk are
@@ -2025,7 +2122,7 @@ def build_context(chunk_num, total_chunks, previous_entries=None,
     return "\n".join(context_parts)
 
 
-def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_entries=None, max_retries=2, system_prompt=None, user_prompt_template=None, max_tokens=4096, temperature=0.6, top_p=0.8, top_k=0, min_p=0, presence_penalty=0.0, banned_tokens=None, roster=None, max_context_roster_names=None, num_ctx=None, attest_window=None, require_attested=False, reasoning_effort=None, source_words=None, check_tags=False):
+def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_entries=None, max_retries=2, system_prompt=None, user_prompt_template=None, max_tokens=4096, temperature=0.6, top_p=0.8, top_k=0, min_p=0, presence_penalty=0.0, banned_tokens=None, roster=None, max_context_roster_names=None, num_ctx=None, attest_window=None, require_attested=False, reasoning_effort=None, source_words=None, check_tags=False, constrain_schema=True):
     """Classify one chunk's spans and rebuild its script entries verbatim.
 
     Returns ``(entries, stats)``. ``stats`` reports span counts and whether the
@@ -2077,6 +2174,16 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
     # closing the array early -- dropping a contiguous SUFFIX of ids with
     # finish_reason=stop, nowhere near max_tokens -- and separately inventing
     # role values ("thought"). Both are recoverable by re-asking for the gap.
+    # Grammar constraint plus a budget matching what we actually asked for.
+    # Built once: the span set is identical across attempts, only the nudge
+    # changes.
+    label_schema = build_label_schema(spans, chunk) if constrain_schema else None
+    response_format = (
+        {"type": "json_schema", "json_schema": {"schema": label_schema}}
+        if label_schema else None)
+    attempt_max_tokens = label_token_budget(len(visible_spans(spans, chunk)),
+                                            max_tokens)
+
     merged_labels = {}
     recovery = None
     truncated = False
@@ -2097,7 +2204,8 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
                 temperature=temperature,
                 top_p=top_p,
                 presence_penalty=presence_penalty,
-                max_tokens=max_tokens,
+                max_tokens=attempt_max_tokens,
+                **({"response_format": response_format} if response_format else {}),
                 extra_body={
                     k: v for k, v in {
                         "top_k": top_k if top_k else None,
@@ -2566,6 +2674,11 @@ def main():
     # not have. A non-English book needs no setting: no verb matches, so the
     # check finds nothing and costs nothing.
     check_tags = bool(generation_config.get("check_attribution_tags", True))
+    # Default True in BOTH readers -- app.py GenerationConfig backs the UI,
+    # this subprocess reads config.json directly. Leaving one False would
+    # make behaviour depend on whether the key had ever been saved.
+    constrain_schema = bool(
+        generation_config.get("constrain_label_schema", True))
     # How much preceding source text joins the current chunk as the
     # attestation window. Defaults to one chunk, so a name introduced in the
     # sentence before the chunk boundary still attests. The failure direction
@@ -2672,6 +2785,7 @@ def main():
             reasoning_effort=reasoning_effort,
             source_words=source_words,
             check_tags=check_tags,
+            constrain_schema=constrain_schema,
         )
         all_entries.extend(entries)
         for entry in entries:
