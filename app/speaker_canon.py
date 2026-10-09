@@ -1496,16 +1496,31 @@ def contradicts_attribution(speaker, following_text, roster_index):
     if not speaker or speaker == "NARRATOR" or not roster_index:
         return None
 
+    tagged_name = attributed_name(following_text, roster_index)
+    if tagged_name is None:
+        return None
+    if set(_core_tokens(speaker)) & set(_core_tokens(tagged_name)):
+        return None
+    return tagged_name
+
+
+def attributed_name(following_text, roster_index):
+    """The ONE established roster name an attribution tag resolves to, or None.
+
+    The resolution half of contradicts_attribution, with the same refusals: no
+    recognizable tag, a tag word the roster does not know, or a word matching
+    two or more names. Callers decide what disagreeing with it means;
+    contradicts_attribution never accuses NARRATOR, while generate_script uses
+    this directly to catch a tagged quotation the model narrated.
+    """
+    if not roster_index:
+        return None
     word = attribution_tag_name(following_text)
     if not word:
         return None
 
     base = _fold_word(word)
     if not base:
-        return None
-
-    speaker_tokens = set(_core_tokens(speaker))
-    if base in speaker_tokens:
         return None
 
     tagged = {name for name in roster_index.values() if base in _core_tokens(name)}
@@ -1518,11 +1533,7 @@ def contradicts_attribution(speaker, following_text, roster_index):
         tagged = {name for name in tagged if _core_tokens(name) == [base]}
     if len(tagged) != 1:
         return None
-
-    tagged_name = next(iter(tagged))
-    if speaker_tokens & set(_core_tokens(tagged_name)):
-        return None
-    return tagged_name
+    return next(iter(tagged))
 
 
 def near_spellings(canonical, windows, roster_index):

@@ -33,6 +33,8 @@ from speaker_canon import (
     UNATTESTED,
     UNVERIFIABLE,
     attest_speaker,
+    attributed_name,
+    attribution_tag_name,
     canonicalize,
     contradicts_attribution,
     near_spellings,
@@ -1378,6 +1380,15 @@ def _closing_tag_text_by_id(spans, source):
         whitespace-only neighbour is the paragraph break, and a tag on the far
         side of one introduces the NEXT quotation).
 
+    CONTINUATIONS. ``"Go," Nita said. "Now."`` -- the tag between two
+    quotations of one paragraph attributes BOTH. Measured on a full book, this
+    second quotation was the model's weakest spot: 89.6% agreement with the tag
+    (828/924), against 98% for the quotation the tag closes. It is mapped to
+    the same tag text, but only when that text is NOTHING BUT the tag -- one
+    clause, no other capitalized word. ``"Sure," Kit said. Nita shook her
+    head. "No."`` changes speaker mid-paragraph, and is excluded by both
+    bounds. A span with its own closing tag keeps that one.
+
     Parsing the tag itself is speaker_canon's job (attribution_tag_name /
     contradicts_attribution); this returns raw source text only. Pure.
     """
@@ -1394,7 +1405,31 @@ def _closing_tag_text_by_id(spans, source):
         if following.kind != UNQUOTED or is_whitespace_span(following, source):
             continue
         texts[span.id] = following.text(source)
+    closing_texts = dict(texts)  # continuations chain from closing tags only
+    for index in range(2, len(spans)):
+        span = spans[index]
+        if span.kind != QUOTED or span.id in closing_texts:
+            continue
+        tag_text = closing_texts.get(spans[index - 2].id)
+        if tag_text is not None and _is_bare_tag(tag_text):
+            texts[span.id] = tag_text
     return texts
+
+
+def _is_bare_tag(text):
+    """True when ``text`` is a single attribution clause and nothing else, so
+    a quotation right after it can only be the tagged speaker's."""
+    if "\n" in text:
+        return False
+    body = text.strip().rstrip(",.;:!?—–-").strip()
+    if not body or any(mark in body for mark in ".!?;"):
+        return False
+    name = attribution_tag_name(text)
+    if not name:
+        return False
+    others = [word for word in re.findall(r"[^\W\d_][\w’']*", body)
+              if word[0].isupper() and word != name]
+    return not others
 
 
 def _tag_contradictions(spans, speaker_by_id, source, roster_index):
@@ -1444,9 +1479,17 @@ def _tag_contradictions(spans, speaker_by_id, source, roster_index):
     contradictions = []
     for span_id, following_text in _closing_tag_text_by_id(spans, source).items():
         speaker = speaker_by_id.get(span_id)
-        if not speaker or speaker == NARRATOR:
+        if not speaker:
             continue
-        tagged = contradicts_attribution(speaker, following_text, roster_index)
+        if speaker == NARRATOR:
+            # Present only when the MODEL narrated this quotation (callers add
+            # NARRATOR for model-chosen narration, never for fallback). A tag
+            # naming an established character beside it is the measured
+            # failure: 20 of 1,353 tagged quotations narrated on one book,
+            # previously invisible because this check skipped NARRATOR.
+            tagged = attributed_name(following_text, roster_index)
+        else:
+            tagged = contradicts_attribution(speaker, following_text, roster_index)
         if tagged:
             contradictions.append((span_id, speaker, tagged))
     return contradictions
@@ -1457,7 +1500,8 @@ def _contradicted_speaker_ids(spans, merged, source=None, roster=None):
     chunk currently holds, before they are resolved.
 
     Mirrors _unattested_speaker_ids' shape and contract (read-only, dialogue
-    labels only, NARRATOR skipped) so the retry predicate and the degradation
+    labels only -- plus model-chosen NARRATOR, which _tag_contradictions checks
+    against an established tagged name) so the retry predicate and the degradation
     count in resolve_span_labels apply the same rule -- the drift
     _incomplete_span_ids' docstring warns about.
 
@@ -1473,11 +1517,14 @@ def _contradicted_speaker_ids(spans, merged, source=None, roster=None):
             continue
         role = label.get("role")
         role = role.strip().lower() if isinstance(role, str) else ""
-        if role != "dialogue":
-            continue
         raw_speaker = label.get("speaker")
         canonical = canonicalize(raw_speaker) if isinstance(raw_speaker, str) else ""
-        if not canonical or canonical == NARRATOR or is_placeholder_speaker(canonical):
+        if role == "narration" or canonical == NARRATOR:
+            speaker_by_id[span.id] = NARRATOR  # see _tag_contradictions
+            continue
+        if role != "dialogue":
+            continue
+        if not canonical or is_placeholder_speaker(canonical):
             continue
         speaker_by_id[span.id] = canonical
         remember_in_roster(roster_index, canonical)
@@ -1663,6 +1710,7 @@ def resolve_span_labels(spans, labels, source=None, roster=None,
     dialogue_without_speaker = 0
     repairs = []
     repairs_refused = []
+    model_narrated = set()  # the model's own NARRATOR choice, not fallback
     tag_texts = _closing_tag_text_by_id(spans, source)
 
     for span in spans:
@@ -1684,6 +1732,8 @@ def resolve_span_labels(spans, labels, source=None, roster=None,
             role = role.strip().lower() if isinstance(role, str) else ""
             raw_speaker = label.get("speaker")
             canonical = canonicalize(raw_speaker) if isinstance(raw_speaker, str) else ""
+            if role == "narration" or canonical == NARRATOR:
+                model_narrated.add(span.id)
 
             if role == "dialogue" and canonical and is_placeholder_speaker(canonical):
                 # An invented enumerated placeholder ("SPEAKER 1") is not a
@@ -1775,6 +1825,8 @@ def resolve_span_labels(spans, labels, source=None, roster=None,
             if speaker and speaker != NARRATOR:
                 speaker_by_id[span.id] = speaker
                 remember_in_roster(tag_roster, speaker)
+            elif span.id in model_narrated:
+                speaker_by_id[span.id] = NARRATOR
         contradictions = _tag_contradictions(spans, speaker_by_id, source, tag_roster)
 
     return resolved, {
@@ -2445,10 +2497,14 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
             # a FALSE detection is therefore one span narrated (loud, counted
             # as dialogue_without_speaker) when the retry supplies nothing at
             # all; prose is untouched either way.
-            for span_id, _, _ in contradicted:
+            for span_id, said, _ in contradicted:
                 label = merged_labels.get(span_id)
                 if isinstance(label, dict):
                     label.pop("speaker", None)
+                    if said == NARRATOR:
+                        # role "narration" is usable too, so it would block
+                        # the corrected "dialogue" from landing.
+                        label.pop("role", None)
             for span_id, _ in unattested:
                 label = merged_labels.get(span_id)
                 if isinstance(label, dict):

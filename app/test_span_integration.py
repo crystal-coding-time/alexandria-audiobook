@@ -2522,6 +2522,71 @@ class TestAttributionTagCheck(unittest.TestCase):
         self.assertEqual(joined(entries), chunk)
 
 
+class TestAttributionTagCoverage(unittest.TestCase):
+    """Two blind spots of the tag check, both measured on a full book: a
+    tagged quotation the MODEL narrated, and the second quotation of a
+    paragraph whose tag sits between the two."""
+
+    def _labels(self, chunk, names):
+        """labels_for with the n-th quoted span labelled names[n]; a name of
+        NARRATOR makes that quotation narration."""
+        it = iter(names)
+        labels = labels_for(chunk, speaker_of=lambda span, text: next(it))
+        for label in labels:
+            if label["speaker"] == "NARRATOR":
+                label["role"] = "narration"
+        return json.dumps(labels)
+
+    def test_a_narrated_tagged_quotation_is_retried_and_reported(self):
+        chunk = TAGGED_DIALOGUE  # line one is tagged "Annika said"
+        bad = self._labels(chunk, ["NARRATOR", "BOREL"])
+        client = FakeClient(*[FakeResponse(bad)] * 3)
+        entries, stats, _ = run_chunk(client, chunk, check_tags=True,
+                                      roster=_tagged_roster())
+        self.assertGreater(len(client.user_prompts), 1, "a retry should have fired")
+        self.assertIn("ANNIKA", client.user_prompts[1])
+        self.assertEqual(stats["tag_contradictions"], 1)
+        self.assertTrue(stats["degraded"])
+        self.assertEqual(joined(entries), chunk)
+
+    def test_a_narrated_quotation_can_be_corrected_to_dialogue(self):
+        # Role must be cleared with the speaker, or "narration" blocks the fix.
+        chunk = TAGGED_DIALOGUE
+        client = FakeClient(FakeResponse(self._labels(chunk, ["NARRATOR", "BOREL"])),
+                            FakeResponse(self._labels(chunk, ["ANNIKA", "BOREL"])))
+        entries, stats, _ = run_chunk(client, chunk, check_tags=True,
+                                      roster=_tagged_roster())
+        self.assertEqual(stats["tag_contradictions"], 0)
+        self.assertIn("ANNIKA", [e["speaker"] for e in entries])
+
+    def test_fallback_narration_is_not_an_accusation(self):
+        # Only the model's own NARRATOR choice counts; an unlabelled span is
+        # already reported as fallback.
+        chunk = TAGGED_DIALOGUE
+        partial = json.loads(self._labels(chunk, ["ANNIKA", "BOREL"]))[1:]
+        client = FakeClient(*[FakeResponse(json.dumps(partial))] * 3)
+        _, stats, _ = run_chunk(client, chunk, check_tags=True, roster=_tagged_roster())
+        self.assertEqual(stats["tag_contradictions"], 0)
+
+    def test_the_quotation_after_a_bare_tag_is_attributed_by_it(self):
+        chunk = '"Go," Annika said. "Now."\n'
+        bad = self._labels(chunk, ["ANNIKA", "BOREL"])
+        client = FakeClient(*[FakeResponse(bad)] * 3)
+        _, stats, _ = run_chunk(client, chunk, check_tags=True, roster=_tagged_roster())
+        self.assertEqual(stats["tag_contradictions"], 1)
+
+    def test_a_tag_followed_by_more_narration_attributes_nothing_after(self):
+        # The speaker can change mid-paragraph; only a bare tag carries over.
+        for chunk in ('"Go," Annika said. Borel shook his head. "No."\n',
+                      '"Go," Annika said, and Borel laughed. "No."\n'):
+            with self.subTest(chunk=chunk):
+                client = FakeClient(FakeResponse(self._labels(chunk, ["ANNIKA", "BOREL"])))
+                _, stats, _ = run_chunk(client, chunk, check_tags=True,
+                                        roster=_tagged_roster())
+                self.assertEqual(stats["tag_contradictions"], 0)
+                self.assertEqual(len(client.user_prompts), 1)
+
+
 class TestLabelSchemaConstraint(unittest.TestCase):
     """The grammar constraint sent with each label request.
 
