@@ -4,7 +4,7 @@ WHY THIS EXISTS
 ---------------
 Audiobooks are verbatim: the spoken word must match the printed word exactly.
 The downstream pipeline sends only span *ids* to an LLM and receives only
-*labels* back (``{"id", "speaker", "role", "instruct"}``) -- never book text.
+*labels* back (``{"<id>": {"speaker", "role", "instruct"}}``) -- never book text.
 Code then reassembles the audiobook script verbatim from the source string by
 ``(start, end)`` offsets. That makes this tokenizer the correctness keystone:
 if the spans do not tile the source exactly, the reassembled text is wrong.

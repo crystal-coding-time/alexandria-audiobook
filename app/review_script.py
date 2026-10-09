@@ -13,7 +13,7 @@ from speaker_canon import canonicalize, remember_in_roster, resolve_against_rost
 # schema: the reviewer only ever corrects "speaker"/"instruct" and must
 # return exactly as many entries as it was given. This is review_script.py's
 # own equivalent of generate_script.py's PROMPT_SCHEMA_MARKER
-# ("span-labels-v1") for the classifier stage -- kept separate (rather than
+# ("span-labels-v2") for the classifier stage -- kept separate (rather than
 # sharing generate_script.select_prompt) because that marker is specific to
 # the span-classifier schema, not the review schema, and generate_script.py
 # is out of scope for this fix.

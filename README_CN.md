@@ -296,7 +296,7 @@ LLM 将你的书籍标注为结构化 JSON 格式，包含：
 
 审校提示可在 `review_prompts.txt` 中自定义（格式与 `default_prompts.txt` 相同）。
 
-> **注意：** `default_prompts.txt` 带有 `span-labels-v1` 标记，`review_prompts.txt` 带有 `verbatim-review-v1` 标记。在本流水线出现之前保存到 `config.json` 中的自定义提示，向 LLM 要求的是它已无法使用的东西，因此缺少标记的已保存提示会被拒绝并给出明显警告，改用内置默认值。如果你自定义提示，请保留标记行。
+> **注意：** `default_prompts.txt` 带有 `span-labels-v2` 标记，`review_prompts.txt` 带有 `verbatim-review-v1` 标记。在本流水线出现之前保存到 `config.json` 中的自定义提示，向 LLM 要求的是它已无法使用的东西，因此缺少标记的已保存提示会被拒绝并给出明显警告，改用内置默认值。如果你自定义提示，请保留标记行。
 
 ### 声音标签页
 脚本生成后，声音会自动从标注脚本中载入。对每个说话人：

@@ -263,24 +263,26 @@ class FakeClient:
 # --------------------------------------------------------------------------
 
 def labels_for(source, speaker_of=None):
-    """Build a well-formed label array covering every span of `source`.
+    """Build the label array a well-behaved model returns for `source`.
 
+    One label per span in build_span_payload, under the payload's positional
+    id -- what the model actually sees -- not the tokenizer's.
     `speaker_of(span, text)` returns the character name for a quoted span;
     default is ELENA. Unquoted spans are always narration.
     """
     labels = []
-    for span in tokenize(source):
+    for n, span in enumerate(visible_spans(tokenize(source), source), 1):
         if span.kind == "quoted":
             name = speaker_of(span, span.text(source)) if speaker_of else "ELENA"
             labels.append({
-                "id": span.id,
+                "id": n,
                 "speaker": name,
                 "role": "dialogue",
                 "instruct": "Flat, controlled delivery.",
             })
         else:
             labels.append({
-                "id": span.id,
+                "id": n,
                 "speaker": "NARRATOR",
                 "role": "narration",
                 "instruct": DEFAULT_NARRATOR_INSTRUCT,
@@ -998,8 +1000,19 @@ class TestRealResponseShapes(unittest.TestCase):
         self.assertFalse(stats["degraded"],
                          "valid JSON with complete labels is a wrong envelope, not a degradation")
         self.assertEqual(stats["recovery"], LABEL_MODE_OBJECT)
-        self.assertIn("id-keyed JSON object", output, "must print a one-line notice")
+        self.assertNotIn("Note:", output, "the requested shape needs no notice")
         self.assertIn("BILL", {entry["speaker"] for entry in entries})
+
+    def test_array_envelope_is_recovered_with_a_notice(self):
+        # span-labels-v1's array: complete labels, superseded envelope.
+        chunk = self.SIX_SPAN_CHUNK
+        entries, stats, output = run_chunk(
+            FakeClient(FakeResponse(json.dumps(labels_for(chunk)))), chunk,
+            constrain_schema=False)
+        self.assertEqual(joined(entries), chunk)
+        self.assertFalse(stats["degraded"])
+        self.assertEqual(stats["fallback"], 0)
+        self.assertIn("JSON array instead of the id-keyed object", output)
 
     def test_ordinary_objects_are_not_mistaken_for_id_maps(self):
         for text in (
@@ -1363,9 +1376,10 @@ class TestWhitespaceSpansOutOfTheLoop(unittest.TestCase):
                         "span 2 is the paragraph break")
 
     def _visible_labels(self):
+        # Payload ids: the model sees 1 and 2, never the hidden whitespace id.
         return [
             {"id": 1, "speaker": "ALPHA", "role": "dialogue", "instruct": "Bright."},
-            {"id": 3, "speaker": "BETA", "role": "dialogue", "instruct": "Flat."},
+            {"id": 2, "speaker": "BETA", "role": "dialogue", "instruct": "Flat."},
         ]
 
     # --- the payload -------------------------------------------------------
@@ -1375,16 +1389,25 @@ class TestWhitespaceSpansOutOfTheLoop(unittest.TestCase):
         lines = payload.split("\n")
 
         self.assertEqual(len(lines), 2, "3 spans, 1 of them whitespace -> 2 payload lines")
-        ids = [json.loads(line)["id"] for line in lines]
-        self.assertEqual(ids, [1, 3], "ids stay the tokenizer's; the gap is the omission")
-        self.assertNotIn('"id": 2', payload)
+        self.assertEqual([json.loads(line)["text"] for line in lines],
+                         ['"Hi."', '"Bye."'])
 
-    def test_payload_ids_are_stable_not_renumbered(self):
-        # The reassembly contract keys on tokenizer ids; renumbering would
-        # silently misalign every label after a whitespace span.
-        payload = build_span_payload(tokenize(STRAIGHT_QUOTES), STRAIGHT_QUOTES)
-        ids = [json.loads(line)["id"] for line in payload.split("\n")]
-        self.assertEqual(ids, sorted(ids))
+    def test_payload_ids_are_positional_without_gaps(self):
+        # A model numbers its answer 1..N whatever ids it was shown; gaps left
+        # by omitted whitespace made it label a hidden id and skip a real one.
+        for chunk in list(FIXTURES.values()) + [self.CHUNK]:
+            with self.subTest(chunk=chunk[:20]):
+                payload = build_span_payload(tokenize(chunk), chunk)
+                ids = [json.loads(line)["id"] for line in payload.split("\n")]
+                self.assertEqual(ids, list(range(1, len(ids) + 1)))
+
+    def test_positional_answer_lands_on_the_right_span_after_a_gap(self):
+        # The mapping back to tokenizer ids keeps reassembly aligned: payload
+        # id 2 is tokenizer span 3, past the hidden paragraph break.
+        client = FakeClient(FakeResponse(json.dumps(self._visible_labels())))
+        entries, _, _ = run_chunk(client, self.CHUNK)
+        self.assertEqual([(e["speaker"], e["text"].strip()) for e in entries],
+                         [("ALPHA", '"Hi."'), ("BETA", '"Bye."')])
 
     # --- resolution and degradation ---------------------------------------
 
@@ -1422,7 +1445,7 @@ class TestWhitespaceSpansOutOfTheLoop(unittest.TestCase):
 
     def test_phantom_label_for_a_whitespace_id_is_ignored(self):
         labels = self._visible_labels() + [
-            {"id": 2, "speaker": "GHOST", "role": "dialogue", "instruct": "x"}]
+            {"id": 3, "speaker": "GHOST", "role": "dialogue", "instruct": "x"}]
         client = FakeClient(FakeResponse(json.dumps(labels)))
         entries, stats, _ = run_chunk(client, self.CHUNK)
 
@@ -1441,7 +1464,9 @@ class TestWhitespaceSpansOutOfTheLoop(unittest.TestCase):
 
     def test_resolve_span_labels_without_source_is_unchanged(self):
         # Back-compat: direct callers that pass no source get the old behavior.
-        resolved, stats = resolve_span_labels(self.spans, self._visible_labels())
+        labels = self._visible_labels()
+        labels[1]["id"] = 3  # resolve_span_labels takes tokenizer ids
+        resolved, stats = resolve_span_labels(self.spans, labels)
         self.assertEqual(stats["whitespace"], 0)
         self.assertEqual(stats["fallback"], 1, "span 2 counts as fallback without source")
 
@@ -1572,7 +1597,7 @@ class TestPromptTemplate(unittest.TestCase):
         self.assertIn("CTX", rendered)
         self.assertIn("SPANS", rendered)
         # Doubled braces in the template collapse to a literal JSON-ish hint.
-        self.assertIn('{"id", "speaker", "role", "instruct"}', rendered)
+        self.assertIn('{"speaker", "role", "instruct"}', rendered)
 
     def test_system_prompt_forbids_emitting_text(self):
         self.assertIn('"role"', DEFAULT_SYSTEM_PROMPT)
@@ -1586,7 +1611,7 @@ class TestPromptTemplate(unittest.TestCase):
 class TestPromptSchemaGuard(unittest.TestCase):
     """Saved config.json prompts written for the retired schema must not be used."""
 
-    # A verbatim shape of the OLD generation prompt: no span-labels-v1 marker.
+    # A verbatim shape of the OLD generation prompt: no span-labels-v2 marker.
     STALE_PROMPT = (
         "You are a script writer converting books into audiobook scripts.\n"
         'Output [{"speaker": "NARRATOR", "text": "...", "instruct": "..."}]\n'
@@ -1619,13 +1644,20 @@ class TestPromptSchemaGuard(unittest.TestCase):
 
     def test_marker_bearing_custom_prompt_is_used_as_is(self):
         custom = (
-            "Custom classifier prompt (prompt schema: span-labels-v1).\n"
+            f"Custom classifier prompt (prompt schema: {PROMPT_SCHEMA_MARKER}).\n"
             "Return only labels.\n"
         )
         chosen, output = self._select(custom, DEFAULT_SYSTEM_PROMPT, "prompts.system_prompt")
 
         self.assertEqual(chosen, custom, "a marker-bearing custom prompt must be honoured verbatim")
         self.assertEqual(output, "", "no warning for a current-schema custom prompt")
+
+    def test_previous_marker_is_stale(self):
+        # A v1 prompt asks for an array the v2 grammar cannot emit.
+        custom = "Custom classifier prompt (prompt schema: span-labels-v1).\n"
+        chosen, output = self._select(custom, DEFAULT_SYSTEM_PROMPT, "prompts.system_prompt")
+        self.assertEqual(chosen, DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("WARNING", output)
 
     def test_absent_or_blank_custom_prompt_uses_default_silently(self):
         for value in (None, "", "   "):
@@ -2490,10 +2522,6 @@ class TestAttributionTagCheck(unittest.TestCase):
         self.assertEqual(joined(entries), chunk)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestLabelSchemaConstraint(unittest.TestCase):
     """The grammar constraint sent with each label request.
 
@@ -2503,15 +2531,20 @@ class TestLabelSchemaConstraint(unittest.TestCase):
     is asserted is the shape of the constraint, not a corpus outcome.
     """
 
-    CHUNK = 'He set it down. "Stop," she said. "Why would I?" he asked. It ended.'
+    # Contains a whitespace span, so positional and tokenizer ids differ.
+    CHUNK = 'He set it down. "Stop," she said.\n\n"Why would I?" he asked. It ended.'
 
     def _schema_sent(self, **kwargs):
-        spans = tokenize(self.CHUNK)
-        labels = [{"id": s.id, "speaker": "NARRATOR", "role": "narration",
-                   "instruct": "Neutral."} for s in spans]
-        client = FakeClient(make_response(json.dumps(labels)))
+        client = FakeClient(FakeResponse(json.dumps(labels_for(self.CHUNK))))
         run_chunk(client, self.CHUNK, **kwargs)
         return client.completions.last_kwargs.get("response_format")
+
+    def _schema(self):
+        return self._schema_sent()["json_schema"]["schema"]
+
+    def _label(self):
+        schema = self._schema()
+        return schema["$defs"]["label"]
 
     def test_schema_is_sent_by_default(self):
         fmt = self._schema_sent()
@@ -2521,36 +2554,58 @@ class TestLabelSchemaConstraint(unittest.TestCase):
     def test_schema_can_be_switched_off(self):
         self.assertIsNone(self._schema_sent(constrain_schema=False))
 
-    def test_item_count_is_pinned_to_the_visible_span_count(self):
-        schema = self._schema_sent()["json_schema"]["schema"]
-        visible = visible_spans(tokenize(self.CHUNK), self.CHUNK)
-        # More labels than spans is the observed failure (one live chunk drew
-        # ~119 labels for a single span); fewer is the early-close failure.
-        self.assertEqual(schema["minItems"], len(visible))
-        self.assertEqual(schema["maxItems"], len(visible))
+    def test_the_exact_id_set_is_pinned(self):
+        # Every payload id required and nothing else allowed: a missing,
+        # duplicated or phantom id cannot be emitted. JSON object keys cannot
+        # repeat, and llama.cpp emits required keys unconditionally in order.
+        schema = self._schema()
+        payload = build_span_payload(tokenize(self.CHUNK), self.CHUNK)
+        sent = [str(json.loads(line)["id"]) for line in payload.split("\n")]
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["required"], sent)
+        self.assertEqual(list(schema["properties"]), sent)
+        self.assertFalse(schema["additionalProperties"])
 
-    def test_ids_are_bounded_by_the_ids_actually_sent(self):
-        schema = self._schema_sent()["json_schema"]["schema"]
-        ids = [s.id for s in visible_spans(tokenize(self.CHUNK), self.CHUNK)]
-        self.assertEqual(schema["items"]["properties"]["id"]["minimum"], min(ids))
-        self.assertEqual(schema["items"]["properties"]["id"]["maximum"], max(ids))
+    def test_every_key_uses_the_label_definition(self):
+        schema = self._schema()
+        for key, prop in schema["properties"].items():
+            self.assertEqual(prop, {"$ref": "#/$defs/label"}, key)
 
     def test_a_text_key_is_unrepresentable(self):
         """Contract 1 as a decoder guarantee, not a prompt request."""
-        items = self._schema_sent()["json_schema"]["schema"]["items"]
-        self.assertFalse(items["additionalProperties"])
-        self.assertNotIn("text", items["properties"])
+        label = self._label()
+        self.assertFalse(label["additionalProperties"])
+        self.assertNotIn("text", label["properties"])
+        self.assertEqual(sorted(label["required"]), ["instruct", "role", "speaker"])
 
     def test_role_is_a_closed_two_value_set(self):
-        items = self._schema_sent()["json_schema"]["schema"]["items"]
-        self.assertEqual(sorted(items["properties"]["role"]["enum"]),
+        self.assertEqual(sorted(self._label()["properties"]["role"]["enum"]),
                          ["dialogue", "narration"])
 
     def test_speaker_is_left_free(self):
         """Deliberate: an enum would force a wrong-but-present name when the
         true speaker is absent, which attestation could no longer catch."""
-        items = self._schema_sent()["json_schema"]["schema"]["items"]
-        self.assertNotIn("enum", items["properties"]["speaker"])
+        self.assertNotIn("enum", self._label()["properties"]["speaker"])
+
+    def test_the_requested_shape_round_trips_without_a_notice(self):
+        labels = labels_for(self.CHUNK)
+        reply = json.dumps({str(l["id"]): {k: v for k, v in l.items() if k != "id"}
+                            for l in labels})
+        entries, stats, output = run_chunk(
+            FakeClient(FakeResponse(reply)), self.CHUNK)
+        self.assertEqual(joined(entries), self.CHUNK)
+        self.assertFalse(stats["degraded"])
+        self.assertEqual(stats["fallback"], 0)
+        self.assertEqual(stats["recovery"], LABEL_MODE_OBJECT)
+        self.assertNotIn("Note:", output)
+
+    def test_a_truncated_object_salvages_its_complete_labels(self):
+        labels = labels_for(self.CHUNK)
+        reply = json.dumps({str(l["id"]): {k: v for k, v in l.items() if k != "id"}
+                            for l in labels})
+        cut = reply[:reply.rindex('"' + str(labels[-1]["id"]) + '"')]
+        salvaged = {l["id"] for l in salvage_label_entries(cut)}
+        self.assertEqual(salvaged, {l["id"] for l in labels[:-1]})
 
     def test_no_schema_when_there_is_nothing_to_ask_about(self):
         self.assertIsNone(build_label_schema([], ""))
@@ -2564,3 +2619,7 @@ class TestLabelSchemaConstraint(unittest.TestCase):
                          "a huge span count clamps to the ceiling")
         self.assertEqual(label_token_budget(0, 4096), 4096,
                          "no spans falls back to the configured value")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

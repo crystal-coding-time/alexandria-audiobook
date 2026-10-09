@@ -2,8 +2,8 @@
 
 The LLM is an ANALYTICAL CLASSIFIER here, never a generator of book text.
 Code tokenizes each chunk into spans (span_tokenizer), sends the LLM span ids
-plus their text, and receives back ONLY labels --
-``{"id", "speaker", "role", "instruct"}``. Code then reassembles the script
+plus their text, and receives back ONLY labels, keyed by span id --
+``{"<id>": {"speaker", "role", "instruct"}}``. Code then reassembles the script
 verbatim from the source string by span offsets. Consequences:
 
 * Truncated or malformed LLM output costs LABELS, never PROSE. Any span the
@@ -62,8 +62,10 @@ EXIT_DEGRADED = 3
 # in config.json before this stage existed asks the LLM to rewrite the book
 # into speaker/text/instruct objects, which the span classifier cannot use --
 # every span would fall back to NARRATOR. Requiring the marker makes that
-# mismatch loud and self-healing instead of silent.
-PROMPT_SCHEMA_MARKER = "span-labels-v1"
+# mismatch loud and self-healing instead of silent. v2: the response became an
+# object keyed by span id (see build_label_schema), so a v1 prompt asking for
+# an array would contradict the grammar.
+PROMPT_SCHEMA_MARKER = "span-labels-v2"
 
 # How much of a previous entry's text to show as continuity context. Context is
 # input, not output -- a snippet is enough and keeps the prompt cheap.
@@ -446,6 +448,7 @@ def salvage_json_entries(json_text):
 # ---------------------------------------------------------------------------
 
 _LABEL_OBJECT_RE = re.compile(r'\{[^{}]*\}')
+_ID_KEY_RE = re.compile(r'"(\d+)"\s*:\s*\{')
 _LABEL_ID_RE = re.compile(r'"id"\s*:\s*"?(\d+)"?')
 _LABEL_STRING_FIELD_RE = {
     "speaker": re.compile(r'"speaker"\s*:\s*"((?:[^"\\]|\\.)*)"'),
@@ -607,6 +610,9 @@ def salvage_label_entries(json_text):
     json_text = strip_thinking_tags(json_text)
     if not json_text:
         return None
+    # The id-keyed shape ("3": {"speaker": ...}) carries its id OUTSIDE the
+    # label; move it inside so a truncated object salvages like an array.
+    json_text = _ID_KEY_RE.sub(r'{"id": \1, ', json_text)
 
     labels = []
     for raw in _LABEL_OBJECT_RE.findall(json_text):
@@ -784,8 +790,8 @@ def salvage_markdown_labels(text):
 
 
 # How the labels for a chunk were recovered, most faithful first.
-LABEL_MODE_ARRAY = "array"
 LABEL_MODE_OBJECT = "id-keyed object"
+LABEL_MODE_ARRAY = "array"
 LABEL_MODE_SALVAGE = "regex salvage"
 LABEL_MODE_MARKDOWN = "markdown salvage"
 
@@ -793,9 +799,9 @@ LABEL_MODE_MARKDOWN = "markdown salvage"
 def extract_labels(text):
     """Recover labels from a raw LLM response. Returns ``(labels, mode)``.
 
-    Tried in descending fidelity: the requested JSON array, an id-keyed JSON
-    object, regex salvage of individual JSON objects (this is what survives a
-    truncation), then markdown blocks. ``(None, None)`` when nothing is usable.
+    Tried in descending fidelity: the requested id-keyed JSON object, a JSON
+    array of labels (the span-labels-v1 envelope), regex salvage of individual
+    label objects (this is what survives a truncation), then markdown blocks. ``(None, None)`` when nothing is usable.
 
     Misspelled schema keys are recovered here, at the one point every parse mode
     passes through, so the retry predicate and the resolver always see the same
@@ -811,15 +817,15 @@ def _extract_labels(text):
     if not text:
         return None, None
 
+    labels = labels_from_id_keyed_object(text)
+    if labels:
+        return labels, LABEL_MODE_OBJECT
+
     json_text = clean_json_string(text)
     if json_text:
         labels = parse_label_array(json_text)
         if labels:
             return labels, LABEL_MODE_ARRAY
-
-    labels = labels_from_id_keyed_object(text)
-    if labels:
-        return labels, LABEL_MODE_OBJECT
 
     # Salvage the cleaned array text first, then ALWAYS retry against the raw
     # response if that yielded nothing. Falling back only when json_text was
@@ -886,17 +892,28 @@ def build_span_payload(spans, source):
 
     One JSON object per line: {"id", "kind", "text"}. The LLM sees the text so
     it can classify it; it is instructed never to send text back. Whitespace-only
-    spans are omitted -- they cost tokens and invite phantom skips, and their
-    ids stay the tokenizer's, so the visible ids simply have gaps.
+    spans are omitted -- they cost tokens and invite phantom skips.
+
+    Ids are POSITIONAL (1..N over the visible spans), not the tokenizer's. With
+    tokenizer ids the omitted whitespace spans left gaps (5, 7, 8...) and the
+    model numbered its answer 1..N regardless: on a 281-chunk run 209 chunks
+    had gaps, and all 26 "span unlabelled" first attempts (0 in gap-free
+    chunks) were the model labelling a hidden id and skipping the last visible
+    one -- on every attempt, for the two chunks that degraded. process_chunk
+    maps answers back through llm_id_map().
     """
     return "\n".join(
         json.dumps(
-            {"id": span.id, "kind": span.kind, "text": span.text(source)},
+            {"id": n, "kind": span.kind, "text": span.text(source)},
             ensure_ascii=False,
         )
-        for span in spans
-        if not is_whitespace_span(span, source)
+        for n, span in enumerate(visible_spans(spans, source), 1)
     )
+
+
+def llm_id_map(spans, source):
+    """Tokenizer span id -> the positional id build_span_payload shows the LLM."""
+    return {span.id: n for n, span in enumerate(visible_spans(spans, source), 1)}
 
 
 def build_label_schema(spans, source, instruct_max=INSTRUCT_MAX_CHARS):
@@ -904,21 +921,25 @@ def build_label_schema(spans, source, instruct_max=INSTRUCT_MAX_CHARS):
 
     Ollama compiles a schema into a GBNF grammar and enforces it by masking
     invalid tokens while decoding -- a finite state machine over the token
-    vocabulary. What the prompt currently asks for politely, this makes
-    impossible. Verified empirically against the configured server (an `enum`
-    forced a name the model did not want to emit); not inferred from upstream
-    source, because Ollama vendors its own llama.cpp and the two drift.
+    vocabulary. What the prompt asks for politely, this makes impossible.
+    Verified empirically against the configured server, not inferred from
+    upstream source, because Ollama vendors its own llama.cpp and the two drift.
 
-    What this schema removes, each tied to an observed live failure:
+    The response is an OBJECT keyed "1".."N" (the positional ids
+    build_span_payload sends), every key required, no others allowed.
+    llama.cpp's converter emits required properties unconditionally, in
+    declaration order, so the exact id SET is pinned: a missing, duplicated or
+    phantom id cannot be emitted. Verified on Ollama 0.40.1 -- told to repeat
+    ids 1 and 2 and skip 3, it was forced to emit "1", "2", "3" once each.
+    An ARRAY cannot do this: ``uniqueItems`` is unsupported and ``prefixItems``
+    is accepted and SILENTLY IGNORED (llama.cpp grammars/README.md), so an
+    array schema bounded only by count and range still let 12 of 281 chunks
+    duplicate an id on a measured run.
 
-      * ``additionalProperties: False`` -- a ``text`` key cannot be emitted.
-        Contract 1 stops being a request and becomes a decoder guarantee.
-      * ``maxItems`` = the visible span count -- a chunk of pure narration that
-        tokenized to ONE span once drew ~119 labels; more labels than spans is
-        now unrepresentable. ``minItems`` likewise closes the early-close case
-        that caused 23 of 38 missing-span retries.
-      * ``id`` bounded to [min, max] of the ids actually sent -- an id outside
-        the visible range cannot occur.
+    Also removed, each tied to an observed live failure:
+
+      * ``additionalProperties: False`` on each label -- a ``text`` key cannot
+        be emitted. Contract 1 becomes a decoder guarantee, not a request.
       * ``role`` as a two-value enum -- invented roles ("thought") cannot occur.
       * ``instruct`` with ``maxLength`` -- the one field that can run away, and
         what pushed a live completion into max_tokens.
@@ -931,39 +952,33 @@ def build_label_schema(spans, source, instruct_max=INSTRUCT_MAX_CHARS):
     attestation can no longer catch -- trading a loud failure for a silent one,
     against contract 7. That is a separate, measured change.
 
-    The exact id SET is not pinned. Doing so needs per-position typing
-    (``prefixItems``), which Ollama ACCEPTS AND SILENTLY IGNORES, so a schema
-    using it would look applied while constraining nothing -- worse than
-    sending none. An id-keyed object would pin the set, but that is a different
-    response shape than the prompt specifies and would require bumping
-    PROMPT_SCHEMA_MARKER; kept for a follow-up if duplicate-id responses show
-    up in practice. Count plus range already makes the observed failure
-    (phantom ids far outside the range, in bulk) unrepresentable.
-
     Returns None when there is nothing to ask about, so the caller sends no
     constraint rather than an empty one.
     """
-    ids = [span.id for span in visible_spans(spans, source)]
-    if not ids:
+    count = len(visible_spans(spans, source))
+    if not count:
         return None
     instruct = {"type": "string"}
     if instruct_max:
         instruct["maxLength"] = int(instruct_max)
+    keys = [str(n) for n in range(1, count + 1)]
     return {
-        "type": "array",
-        "minItems": len(ids),
-        "maxItems": len(ids),
-        "items": {
+        "type": "object",
+        # One shared definition, referenced per key, keeps the schema (and the
+        # grammar Ollama compiles from it) linear in N with a small constant.
+        "properties": {key: {"$ref": "#/$defs/label"} for key in keys},
+        "required": keys,
+        "additionalProperties": False,
+        "$defs": {"label": {
             "type": "object",
             "properties": {
-                "id": {"type": "integer", "minimum": min(ids), "maximum": max(ids)},
                 "speaker": {"type": "string"},
                 "role": {"type": "string", "enum": ["dialogue", "narration"]},
                 "instruct": instruct,
             },
-            "required": ["id", "speaker", "role", "instruct"],
+            "required": ["speaker", "role", "instruct"],
             "additionalProperties": False,
-        },
+        }},
     }
 
 
@@ -990,8 +1005,10 @@ def label_token_budget(span_count, ceiling):
 # attempt-1 array followed by an attempt-2 markdown salvage still surfaces the
 # markdown contract violation instead of hiding it behind the array.
 _MODE_FIDELITY = {
-    "array": 0,
-    "id-keyed object": 1,
+    # span-labels-v2 requests the id-keyed object; a bare array is the old
+    # envelope -- complete labels, wrong shape -- so it ranks just below.
+    "id-keyed object": 0,
+    "array": 1,
     "regex salvage": 2,
     "markdown salvage": 3,
 }
@@ -1170,7 +1187,7 @@ def _retry_nudge(missing_ids, bad_role_ids, unattested=None, no_speaker_ids=None
             "these quotations and give the speaker the text attributes it to. "
             "If the tag belongs to a DIFFERENT quotation and your original "
             "answer was right, repeat it.")
-    parts.append("Return the JSON array again. It MUST contain one object for every id "
+    parts.append("Return the JSON object again. It MUST contain one label for every span id "
                  'listed above, and every "role" must be exactly "dialogue" or "narration".')
     return " ".join(parts)
 
@@ -2184,6 +2201,13 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
     attempt_max_tokens = label_token_budget(len(visible_spans(spans, chunk)),
                                             max_tokens)
 
+    # The LLM sees positional ids (see build_span_payload); everything past the
+    # response boundary uses tokenizer ids. An id with no visible span maps to
+    # its negation -- never a valid span id -- so it is still discarded and
+    # counted as a phantom downstream instead of landing on a real span.
+    to_llm = llm_id_map(spans, chunk)
+    from_llm = {n: span_id for span_id, n in to_llm.items()}
+
     merged_labels = {}
     recovery = None
     truncated = False
@@ -2317,8 +2341,8 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
 
         if labels:
             recovery = _worst_mode(recovery, mode)
-            if mode == LABEL_MODE_OBJECT:
-                print(f"  Note: model returned an id-keyed JSON object instead of an array; "
+            if mode == LABEL_MODE_ARRAY:
+                print(f"  Note: model returned a JSON array instead of the id-keyed object; "
                       f"recovered all {len(labels)} label(s) from it")
             elif mode == LABEL_MODE_SALVAGE:
                 print(f"  Regex-salvaged {len(labels)} label(s) from a malformed/truncated response")
@@ -2330,6 +2354,8 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
             for label in labels:
                 label_id = _label_id(label)
                 if label_id is not None:
+                    label_id = from_llm.get(label_id, -label_id)
+                    label = {**label, "id": label_id}
                     merged_labels[label_id] = _merge_label(merged_labels.get(label_id), label)
             if attempt > 0:
                 print(f"  Retry recovered {len(merged_labels) - before} new label(s)")
@@ -2392,10 +2418,13 @@ def process_chunk(client, model_name, chunk, chunk_num, total_chunks, previous_e
                     name, [attest_window] if attest_window else [], roster or {})
                 for _, name in unattested
             }
-            retry_nudge = _retry_nudge(missing_ids, bad_role_ids, unattested,
-                                       no_speaker_ids=no_speaker_ids,
-                                       spelling_hints=spelling_hints,
-                                       contradicted=contradicted)
+            retry_nudge = _retry_nudge(
+                [to_llm[i] for i in missing_ids],
+                [to_llm[i] for i in bad_role_ids],
+                [(to_llm[i], name) for i, name in unattested],
+                no_speaker_ids=[to_llm[i] for i in no_speaker_ids],
+                spelling_hints=spelling_hints,
+                contradicted=[(to_llm[i], s, t) for i, s, t in contradicted])
             # Clear the refused speakers so the retry's answer can actually
             # land. _merge_label deliberately never overwrites a usable field
             # -- that is what makes "a retry can never make things worse" a

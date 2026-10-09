@@ -287,7 +287,7 @@ Entry `text` is always re-imposed from the original entry, so a review pass cann
 
 Review prompts are customizable in `review_prompts.txt` (same format as `default_prompts.txt`).
 
-> **Note:** `default_prompts.txt` carries a `span-labels-v1` marker and `review_prompts.txt` a `verbatim-review-v1` marker. A custom prompt saved in `config.json` before this pipeline existed asks the LLM for something it can no longer use, so a saved prompt missing its marker is rejected with a loud warning and the built-in default is used instead. If you customize a prompt, keep the marker line.
+> **Note:** `default_prompts.txt` carries a `span-labels-v2` marker and `review_prompts.txt` a `verbatim-review-v1` marker. A custom prompt saved in `config.json` before this pipeline existed asks the LLM for something it can no longer use, so a saved prompt missing its marker is rejected with a loud warning and the built-in default is used instead. If you customize a prompt, keep the marker line.
 
 ### Voices Tab
 After script generation, voices are automatically loaded from the annotated script. For each speaker:
