@@ -2922,9 +2922,14 @@ def main():
     print(f"{'=' * 60}")
 
     if degraded_chunks:
+        # Say what actually happened: a chunk can degrade with zero fallback
+        # spans (contradicted tag, truncation, salvage -- see contract 7).
+        problem = (f"{total_fallback} span(s) could not be classified and are "
+                   "attributed to NARRATOR, and " if total_fallback else "")
         print("\nWARNING: the script is COMPLETE (no prose was lost -- every span was "
-              "reassembled verbatim), but some spans could not be classified and are "
-              "attributed to NARRATOR. Review the script before rendering audio.")
+              f"reassembled verbatim), but {problem}{len(degraded_chunks)} chunk(s) "
+              "degraded (see 'Degradation events' above). Review the script before "
+              "rendering audio.")
         # Exit 3 = "output written, but degraded". Distinct from 0 (clean) and
         # from 1 (nothing produced). app.py's run_process() logs a nonzero code
         # as "failed with return code 3", which is exactly the intent: silent
